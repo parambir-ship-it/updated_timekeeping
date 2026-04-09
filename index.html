@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Time Entry — Biweekly Timecard System</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>body { font-family: "Source Sans 3", "Segoe UI", system-ui, sans-serif; margin: 0; }</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+
+const ALL_PROJECTS = [
+  { short: "Prog Gen", long: "Program General", code: 190 },
+  { short: "DCYF", long: "Program General (SF)", code: 190 },
+  { short: "RMD", long: "Program General (RMD)", code: 190 },
+  { short: "DOJ", long: "Program General (DOJ)", code: 190 },
+  { short: "DOJ 2", long: "Program General (DOJ 2)", code: 190 },
+  { short: "YCA", long: "Program General (YCA)", code: 190 },
+  { short: "Coast", long: "Program General (Coast)", code: 190 },
+  { short: "OEP SR", long: "Program General (OEP SR)", code: 190 },
+  { short: "OEP NR", long: "Program General (OEP N RMD)", code: 190 },
+  { short: "OEP OAK", long: "Program General (OEP OAK)", code: 190 },
+  { short: "Online", long: "Online Program", code: 170 },
+  { short: "D/E", long: "Development & Events", code: 800 },
+  { short: "G/A", long: "General Admin", code: 900 },
+];
+
+const LEAVE_TYPES = [
+  { short: "Holiday", long: "Holiday" },
+  { short: "Vacation", long: "Vacation" },
+  { short: "Sick", long: "Sick Leave" },
+  { short: "Personal", long: "Personal Leave" },
+];
+
+const DAYS = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
+const ORG = { addr: "29 Mary Street", city: "San Rafael, CA 94901", phone: "415-457-8799", fax: "415-457-8798", email: "info@projectavary.org" };
+const STORE_KEY = "timeentry-app-v2";
+
+function uid() { return "id_" + Math.random().toString(36).slice(2, 10); }
+function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+function parseDate(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+function fmtShort(d) { return `${d.getMonth() + 1}/${d.getDate()}`; }
+function excelSerial(d) { return 45292 + Math.round((d - new Date(2024,0,1)) / 86400000); }
+function colL(c) { let s=""; c++; while(c>0){c--;s=String.fromCharCode(65+(c%26))+s;c=Math.floor(c/26);} return s; }
+
+function getWeeklyCap(allocations, projShort, weekStartDate) {
+  const ws = parseDate(weekStartDate);
+  for (const a of allocations) {
+    if (a.project === projShort && ws >= parseDate(a.start) && ws <= parseDate(a.end)) {
+      return a.weeklyHours;
+    }
+  }
+  return null;
+}
+
+function getAssignedProjects(allocations, periodStart) {
+  const ps = parseDate(periodStart);
+  const pe = addDays(ps, 13);
+  const projs = new Set();
+  for (const a of allocations) {
+    const as = parseDate(a.start);
+    const ae = parseDate(a.end);
+    if (as <= pe && ae >= ps && a.weeklyHours > 0) projs.add(a.project);
+  }
+  return [...projs];
+}
+
+function fmtWeekStart(periodStart, weekNum) {
+  const ps = parseDate(periodStart);
+  const ws = addDays(ps, (weekNum - 1) * 7);
+  return `${ws.getFullYear()}-${String(ws.getMonth()+1).padStart(2,"0")}-${String(ws.getDate()).padStart(2,"0")}`;
+}
+
+const DEFAULT_EMPLOYEES = [{
+  id: "emp_apw", initials: "APW", fullName: "Ambrosia Phoummathep",
+  annualSalary: 138000, hbHrly: 5.81, retHrly: 1.15, ficaHrly: 4.10, stdHours: 80,
+  allocations: [
+    { id: "a1", project: "DCYF", weeklyHours: 4, start: "2024-07-01", end: "2024-12-31" },
+    { id: "a2", project: "DOJ", weeklyHours: 4, start: "2024-07-01", end: "2024-08-30" },
+    { id: "a3", project: "DOJ 2", weeklyHours: 12, start: "2024-07-01", end: "2024-09-30" },
+    { id: "a4", project: "DOJ 2", weeklyHours: 6, start: "2024-10-01", end: "2024-12-31" },
+    { id: "a5", project: "YCA", weeklyHours: 3, start: "2024-07-01", end: "2024-12-31" },
+    { id: "a6", project: "OEP SR", weeklyHours: 3, start: "2024-07-01", end: "2024-08-30" },
+    { id: "a7", project: "OEP SR", weeklyHours: 4, start: "2024-08-31", end: "2024-12-31" },
+    { id: "a8", project: "OEP NR", weeklyHours: 3, start: "2024-07-01", end: "2024-08-30" },
+    { id: "a9", project: "OEP NR", weeklyHours: 4, start: "2024-08-31", end: "2024-12-31" },
+    { id: "a10", project: "OEP OAK", weeklyHours: 3, start: "2024-07-01", end: "2024-08-30" },
+    { id: "a11", project: "OEP OAK", weeklyHours: 4, start: "2024-08-31", end: "2024-12-31" },
+    { id: "a12", project: "Online", weeklyHours: 2, start: "2024-07-01", end: "2024-12-31" },
+    { id: "a13", project: "D/E", weeklyHours: 2, start: "2024-07-01", end: "2024-12-31" },
+    { id: "a14", project: "G/A", weeklyHours: 4, start: "2024-07-01", end: "2024-12-31" },
+  ],
+}];
+
+function emptyWeek() {
+  const w = {};
+  ALL_PROJECTS.forEach(p => { w[p.short] = [0,0,0,0,0,0,0]; });
+  LEAVE_TYPES.forEach(l => { w[l.short] = [0,0,0,0,0,0,0]; });
+  return w;
+}
+
+function generateXLSX(emp, periodStart, week1, week2) {
+  const ps = parseDate(periodStart);
+  const wb = XLSX.utils.book_new();
+  const ws = {};
+  const set = (r, c, v, opts) => {
+    const a = XLSX.utils.encode_cell({ r, c });
+    if (opts?.f) { ws[a] = { t: "n", f: opts.f }; if (opts.z) ws[a].z = opts.z; }
+    else if (v instanceof Date) ws[a] = { t: "n", v: excelSerial(v), z: opts?.z || "mm/dd/yyyy" };
+    else if (typeof v === "number" && v !== 0) { ws[a] = { t: "n", v }; if (opts?.z) ws[a].z = opts.z; }
+    else if (v != null && v !== "" && v !== 0) ws[a] = { t: "s", v: String(v) };
+  };
+
+  set(0,0,"Biweekly Timecard");
+  set(2,0,"Employee"); set(2,1,emp.fullName); set(2,7,ORG.addr);
+  set(3,1,"Exempt Employee"); set(3,7,ORG.city);
+  set(4,0,"Hourly Pay Rate"); set(4,7,ORG.phone);
+  set(5,0,"Pay Period Starting"); set(5,1,ps); set(5,7,ORG.fax);
+  set(6,0,"Ending"); set(6,1,addDays(ps,13)); set(6,7,ORG.email);
+  set(7,0,"Date Paid"); set(7,1,addDays(ps,20));
+
+  ["PROJECT","Project Code","Sat","Sun","Mon","Tue","Wed","Thur","Fri","Total\nHrs"].forEach((h,i) => set(9,i,h));
+
+  set(10,0,"WEEK 1");
+  for (let i=0;i<7;i++) set(10,2+i,addDays(ps,i),{z:"mm/dd"});
+
+  const allRows = ALL_PROJECTS.map(p => ({ ...p, type: "project" }))
+    .concat(LEAVE_TYPES.map(l => ({ short: l.short, long: l.long, code: "", type: "leave" })));
+
+  allRows.forEach((item, idx) => {
+    const r = 11 + idx;
+    set(r, 0, item.long);
+    if (item.code) set(r, 1, item.code);
+    const data = week1[item.short] || [0,0,0,0,0,0,0];
+    for (let i = 0; i < 7; i++) { if (data[i] > 0) set(r, 2+i, data[i]); }
+    set(r, 9, null, { f: `SUM(C${r+1}:I${r+1})` });
+  });
+
+  const totalRow1 = 11 + allRows.length;
+  set(totalRow1, 0, "Total Hrs:");
+  for (let c = 2; c <= 9; c++) set(totalRow1, c, null, { f: `SUM(${colL(c)}12:${colL(c)}${totalRow1})` });
+
+  const w2header = totalRow1 + 1;
+  set(w2header, 0, "WEEK 2");
+  for (let i=0;i<7;i++) set(w2header, 2+i, addDays(ps,7+i), {z:"mm/dd"});
+
+  allRows.forEach((item, idx) => {
+    const r = w2header + 1 + idx;
+    set(r, 0, item.long);
+    if (item.code) set(r, 1, item.code);
+    const data = week2[item.short] || [0,0,0,0,0,0,0];
+    for (let i = 0; i < 7; i++) { if (data[i] > 0) set(r, 2+i, data[i]); }
+    set(r, 9, null, { f: `SUM(C${r+1}:I${r+1})` });
+  });
+
+  const totalRow2 = w2header + 1 + allRows.length;
+  set(totalRow2, 0, "Total Hrs:");
+  for (let c = 2; c <= 9; c++) set(totalRow2, c, null, { f: `SUM(${colL(c)}${w2header+2}:${colL(c)}${totalRow2})` });
+
+  ALL_PROJECTS.forEach((p, idx) => {
+    const summaryRow = 23 + idx;
+    const w1row = 11 + idx;
+    const w2row = w2header + 1 + idx;
+    set(summaryRow, 15, p.long);
+    set(summaryRow, 16, null, { f: `J${w1row+1}+J${w2row+1}` });
+  });
+
+  ws["!ref"] = `A1:Q${totalRow2 + 1}`;
+  ws["!cols"] = [{wch:28},{wch:14},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8},{wch:10},{},{},{},{},{},{wch:28},{wch:10}];
+  XLSX.utils.book_append_sheet(wb, ws, "Biweekly");
+
+  const s1 = {};
+  const set1 = (r,c,v,opts) => {
+    const a = XLSX.utils.encode_cell({r,c});
+    if (opts?.f) { s1[a]={t:"n",f:opts.f}; if(opts.z)s1[a].z=opts.z; }
+    else if (typeof v==="number") { s1[a]={t:"n",v}; if(opts?.z)s1[a].z=opts.z; }
+    else if (v!=null&&v!=="") s1[a]={t:"s",v:String(v)};
+  };
+  set1(0,1,"Hrs");
+  ["Gross Hrly","HB Hrly","Ret Hrly","FICA Hrly"].forEach((l,i) => set1(1,2+i,l));
+  set1(2,2,Math.round(emp.annualSalary/26/emp.stdHours*10000)/10000,{z:"#,##0.00"});
+  set1(2,3,emp.hbHrly,{z:"#,##0.00"}); set1(2,4,emp.retHrly,{z:"#,##0.00"}); set1(2,5,emp.ficaHrly,{z:"#,##0.00"});
+
+  ALL_PROJECTS.forEach((p,idx) => {
+    const r = 3+idx;
+    set1(r,0,p.long);
+    set1(r,1,null,{f:`Biweekly!Q${24+idx}`});
+    set1(r,2,null,{f:`$C$3*B${r+1}`,z:"#,##0.00"});
+    set1(r,3,null,{f:`$D$3*B${r+1}`,z:"#,##0.00"});
+    set1(r,4,null,{f:`$E$3*B${r+1}`,z:"#,##0.00"});
+    set1(r,5,null,{f:`$F$3*B${r+1}`,z:"#,##0.00"});
+  });
+  const tr = 3 + ALL_PROJECTS.length;
+  for (let c=2;c<=5;c++) set1(tr,c,null,{f:`SUM(${colL(c)}4:${colL(c)}${tr})`,z:"#,##0.00"});
+  s1["!ref"]=`A1:F${tr+1}`;
+  s1["!cols"]=[{wch:28},{wch:8},{wch:14},{wch:14},{wch:14},{wch:14}];
+  XLSX.utils.book_append_sheet(wb, s1, "Sheet1");
+
+  const dateStr = String(ps.getMonth()+1).padStart(2,"0") + String(ps.getDate()).padStart(2,"0") + ps.getFullYear();
+  XLSX.writeFile(wb, `${dateStr}_${emp.initials}.xlsx`);
+}
+
+function HourCell({ value, onChange, disabled }) {
+  return (
+    <input
+      type="number" min="0" max="24" step="1"
+      value={value || ""}
+      placeholder="·"
+      disabled={disabled}
+      onChange={e => onChange(Number(e.target.value) || 0)}
+      onFocus={e => e.target.select()}
+      className={`w-12 h-9 text-center text-sm border-0 outline-none rounded-md transition-all
+        ${disabled ? "bg-stone-100 text-stone-300 cursor-not-allowed" : ""}
+        ${!disabled && value > 0 ? "bg-teal-50 text-teal-800 font-semibold" : !disabled ? "bg-transparent text-stone-400" : ""}
+        focus:ring-2 focus:ring-teal-500 focus:bg-white`}
+      style={{ fontFamily: "'JetBrains Mono', 'SF Mono', monospace", fontSize: "13px" }}
+    />
+  );
+}
+
+function CapBadge({ used, cap }) {
+  if (cap === null) return null;
+  const over = used > cap;
+  const full = used >= cap;
+  return (
+    <div className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap
+      ${over ? "bg-rose-100 text-rose-600" : full ? "bg-teal-100 text-teal-600" : "bg-stone-100 text-stone-500"}`}
+      style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+      {used}/{cap}
+    </div>
+  );
+}
+
+function WeekGrid({ weekNum, weekData, setWeekData, periodStart, allocations }) {
+  const weekStartStr = fmtWeekStart(periodStart, weekNum);
+  const ps = parseDate(periodStart);
+  const weekStart = addDays(ps, (weekNum - 1) * 7);
+  const dates = Array.from({length: 7}, (_, i) => addDays(weekStart, i));
+
+  const activeProjects = ALL_PROJECTS.filter(p => getWeeklyCap(allocations, p.short, weekStartStr) !== null);
+
+  const updateCell = (itemShort, dayIdx, val) => {
+    const cap = getWeeklyCap(allocations, itemShort, weekStartStr);
+    if (cap !== null) {
+      const current = (weekData[itemShort] || [0,0,0,0,0,0,0]);
+      const otherDaysTotal = current.reduce((s, v, i) => i === dayIdx ? s : s + v, 0);
+      if (otherDaysTotal + val > cap) {
+        val = Math.max(0, cap - otherDaysTotal);
+      }
+    }
+    setWeekData(prev => {
+      const next = {...prev};
+      next[itemShort] = [...(prev[itemShort] || [0,0,0,0,0,0,0])];
+      next[itemShort][dayIdx] = val;
+      return next;
+    });
+  };
+
+  const allItems = [...activeProjects.map(p => ({...p, type: "project"})), ...LEAVE_TYPES.map(l => ({short: l.short, long: l.long, code: "", type: "leave"}))];
+  const dayTotals = DAYS.map((_, di) => allItems.reduce((sum, item) => sum + ((weekData[item.short] || [])[di] || 0), 0));
+  const grandTotal = dayTotals.reduce((a, b) => a + b, 0);
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse" style={{ minWidth: 640 }}>
+        <thead>
+          <tr>
+            <th className="text-left py-2 px-3 text-xs font-bold text-stone-500 uppercase tracking-wider" style={{width: 220}}>Week {weekNum}</th>
+            <th className="py-2 px-1 text-center w-14"><div className="text-[9px] font-bold text-stone-400 uppercase">Limit</div></th>
+            {dates.map((d, i) => (
+              <th key={i} className="py-2 px-1 text-center w-14">
+                <div className="text-[10px] font-bold text-stone-400 uppercase">{DAYS[i]}</div>
+                <div className="text-xs font-semibold text-stone-600">{fmtShort(d)}</div>
+              </th>
+            ))}
+            <th className="py-2 px-2 text-center w-14"><div className="text-[10px] font-bold text-stone-400 uppercase">Total</div></th>
+          </tr>
+        </thead>
+        <tbody>
+          {activeProjects.map(p => {
+            const rowData = weekData[p.short] || [0,0,0,0,0,0,0];
+            const rowTotal = rowData.reduce((a,b) => a+b, 0);
+            const cap = getWeeklyCap(allocations, p.short, weekStartStr);
+            const atCap = cap !== null && rowTotal >= cap;
+            return (
+              <tr key={p.short} className="border-t border-stone-100 hover:bg-stone-50/50 transition-colors">
+                <td className="py-1 px-3">
+                  <div className="text-sm font-medium text-stone-700">{p.short}</div>
+                  <div className="text-[10px] text-stone-400 leading-tight">{p.long}</div>
+                </td>
+                <td className="py-1 px-1 text-center">
+                  <CapBadge used={rowTotal} cap={cap} />
+                </td>
+                {rowData.map((v, di) => (
+                  <td key={di} className="py-1 px-0.5 text-center">
+                    <HourCell value={v} onChange={val => updateCell(p.short, di, val)}
+                      disabled={atCap && v === 0} />
+                  </td>
+                ))}
+                <td className="py-1 px-2 text-center">
+                  <span className={`text-sm font-bold ${atCap ? "text-teal-600" : rowTotal > 0 ? "text-stone-700" : "text-stone-300"}`}
+                    style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {rowTotal || "·"}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+
+          {activeProjects.length > 0 && (
+            <tr><td colSpan={10} className="py-1"><div className="border-t-2 border-dashed border-stone-200"></div></td></tr>
+          )}
+
+          {LEAVE_TYPES.map(l => {
+            const rowData = weekData[l.short] || [0,0,0,0,0,0,0];
+            const rowTotal = rowData.reduce((a,b) => a+b, 0);
+            return (
+              <tr key={l.short} className="hover:bg-stone-50/50 transition-colors">
+                <td className="py-1 px-3"><div className="text-sm font-medium text-amber-700">{l.long}</div></td>
+                <td></td>
+                {rowData.map((v, di) => (
+                  <td key={di} className="py-1 px-0.5 text-center">
+                    <HourCell value={v} onChange={val => updateCell(l.short, di, val)} />
+                  </td>
+                ))}
+                <td className="py-1 px-2 text-center">
+                  <span className={`text-sm font-bold ${rowTotal > 0 ? "text-amber-700" : "text-stone-300"}`}
+                    style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {rowTotal || "·"}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="border-t-2 border-stone-300">
+            <td className="py-2 px-3 text-sm font-bold text-stone-700">Daily Total</td>
+            <td></td>
+            {dayTotals.map((t, i) => (
+              <td key={i} className="py-2 text-center">
+                <span className={`text-sm font-bold ${t === 8 ? "text-teal-600" : t > 8 ? "text-rose-600" : t > 0 ? "text-stone-700" : "text-stone-300"}`}
+                  style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                  {t || "·"}
+                </span>
+              </td>
+            ))}
+            <td className="py-2 text-center">
+              <span className={`text-base font-black ${grandTotal === 40 ? "text-teal-600" : grandTotal > 40 ? "text-rose-600" : "text-stone-700"}`}
+                style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                {grandTotal}
+              </span>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+function TimeEntryApp() {
+  const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
+  const [tab, setTab] = useState("timeentry");
+  const [selEmpId, setSelEmpId] = useState(DEFAULT_EMPLOYEES[0].id);
+  const [periodStart, setPeriodStart] = useState("2024-07-20");
+  const [week1, setWeek1] = useState(emptyWeek());
+  const [week2, setWeek2] = useState(emptyWeek());
+  const [status, setStatus] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [editEmpId, setEditEmpId] = useState(null);
+  const fileRef = useRef();
+
+  useEffect(() => {
+    (() => {
+      try {
+        const r = (() => { try { const v = localStorage.getItem(STORE_KEY); return v ? {value: v} : null; } catch(e) { return null; } })();
+        if (r?.value) {
+          const d = JSON.parse(r.value);
+          if (d.employees?.length) { setEmployees(d.employees); setSelEmpId(d.employees[0].id); }
+        }
+      } catch(e) {}
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (loaded) try { localStorage.setItem(STORE_KEY, JSON.stringify({ employees })); } catch(e) {}
+  }, [employees, loaded]);
+
+  useEffect(() => { setWeek1(emptyWeek()); setWeek2(emptyWeek()); }, [selEmpId, periodStart]);
+
+  const emp = employees.find(e => e.id === selEmpId);
+  const editEmp = employees.find(e => e.id === editEmpId);
+
+  const w1Total = Object.values(week1).flat().reduce((a,b) => a+b, 0);
+  const w2Total = Object.values(week2).flat().reduce((a,b) => a+b, 0);
+  const biweeklyTotal = w1Total + w2Total;
+
+  const handleDownload = () => {
+    if (!emp) return;
+    generateXLSX(emp, periodStart, week1, week2);
+    setStatus("Timecard downloaded!");
+    setTimeout(() => setStatus(""), 3000);
+  };
+
+  const addEmployee = () => {
+    const e = { id: uid(), initials: "", fullName: "", annualSalary: 0, hbHrly: 0, retHrly: 0, ficaHrly: 0, stdHours: 80, allocations: [] };
+    setEmployees(prev => [...prev, e]);
+    setEditEmpId(e.id);
+  };
+
+  const updateEmp = (id, updates) => setEmployees(prev => prev.map(e => e.id === id ? {...e, ...updates} : e));
+  const deleteEmp = (id) => {
+    setEmployees(prev => prev.filter(e => e.id !== id));
+    if (selEmpId === id) setSelEmpId(employees.find(e => e.id !== id)?.id || null);
+    if (editEmpId === id) setEditEmpId(null);
+  };
+
+  const addAlloc = (empId) => {
+    const e = employees.find(x => x.id === empId);
+    if (!e) return;
+    const a = { id: uid(), project: ALL_PROJECTS[0].short, weeklyHours: 0, start: "2024-01-01", end: "2024-12-31" };
+    updateEmp(empId, { allocations: [...e.allocations, a] });
+  };
+
+  const updateAlloc = (empId, allocId, updates) => {
+    const e = employees.find(x => x.id === empId);
+    if (!e) return;
+    updateEmp(empId, { allocations: e.allocations.map(a => a.id === allocId ? {...a, ...updates} : a) });
+  };
+
+  const deleteAlloc = (empId, allocId) => {
+    const e = employees.find(x => x.id === empId);
+    if (!e) return;
+    updateEmp(empId, { allocations: e.allocations.filter(a => a.id !== allocId) });
+  };
+
+  const exportConfig = () => {
+    const blob = new Blob([JSON.stringify({ employees }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "timeentry_config.json"; a.click(); URL.revokeObjectURL(url);
+  };
+
+  const importConfig = (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { try { const d = JSON.parse(ev.target.result); if (d.employees) { setEmployees(d.employees); setSelEmpId(d.employees[0]?.id); } } catch { alert("Invalid file"); } };
+    reader.readAsText(file); e.target.value = "";
+  };
+
+  const hasProjects = emp ? getAssignedProjects(emp.allocations, periodStart).length > 0 : false;
+
+  if (!loaded) return <div className="min-h-screen flex items-center justify-center bg-stone-50"><p className="text-stone-400">Loading...</p></div>;
+
+  return (
+    <div className="min-h-screen bg-stone-50" style={{ fontFamily: "'Source Sans 3', 'Segoe UI', system-ui, sans-serif" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+      <div className="bg-stone-800 text-white px-5 py-3">
+        <div className="max-w-5xl mx-auto flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center text-sm font-black">T</div>
+            <div>
+              <h1 className="text-base font-bold tracking-tight">Time Entry</h1>
+              <p className="text-stone-400 text-[10px]">Biweekly timecard system</p>
+            </div>
+          </div>
+          <div className="flex gap-1">
+            {[["timeentry","Enter Time"],["admin","Setup"]].map(([key,label]) => (
+              <button key={key} onClick={() => setTab(key)}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${tab===key ? "bg-teal-500 text-white" : "text-stone-400 hover:bg-stone-700"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-5xl mx-auto p-4">
+        {tab === "timeentry" && (
+          <div className="space-y-4">
+            <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-4">
+              <div className="flex items-end gap-4 flex-wrap">
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1">Employee</label>
+                  <select value={selEmpId || ""} onChange={e => setSelEmpId(e.target.value)}
+                    className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-400 bg-white">
+                    {employees.map(e => <option key={e.id} value={e.id}>{e.initials} — {e.fullName || "New Employee"}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1">Pay Period Start (Saturday)</label>
+                  <input type="date" value={periodStart} onChange={e => setPeriodStart(e.target.value)}
+                    className="border border-stone-300 rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-400" />
+                </div>
+                <button onClick={handleDownload} disabled={biweeklyTotal === 0}
+                  className={`px-5 py-2 rounded-lg text-sm font-bold shadow-sm transition-all ${biweeklyTotal > 0 ? "bg-teal-500 text-white hover:bg-teal-600" : "bg-stone-200 text-stone-400 cursor-not-allowed"}`}>
+                  Download .xlsx
+                </button>
+              </div>
+              {status && <div className="mt-3 px-3 py-1.5 bg-teal-50 border border-teal-200 text-teal-700 rounded-lg text-sm font-medium">{status}</div>}
+            </div>
+
+            {emp && !hasProjects ? (
+              <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-10 text-center">
+                <p className="text-stone-400 text-sm">No active allocations for {emp.initials} during this pay period. Go to <button onClick={() => {setTab("admin"); setEditEmpId(emp.id);}} className="text-teal-600 font-semibold underline">Setup</button> to add contract allocations.</p>
+              </div>
+            ) : emp ? (
+              <>
+                <div className="flex items-center gap-3 px-1 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-stone-400">WEEK 1:</span>
+                    <span className={`text-sm font-black ${w1Total === 40 ? "text-teal-600" : w1Total > 40 ? "text-rose-600" : "text-stone-600"}`}
+                      style={{ fontFamily: "'JetBrains Mono', monospace" }}>{w1Total} hrs</span>
+                  </div>
+                  <span className="text-stone-300">+</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-stone-400">WEEK 2:</span>
+                    <span className={`text-sm font-black ${w2Total === 40 ? "text-teal-600" : w2Total > 40 ? "text-rose-600" : "text-stone-600"}`}
+                      style={{ fontFamily: "'JetBrains Mono', monospace" }}>{w2Total} hrs</span>
+                  </div>
+                  <span className="text-stone-300">=</span>
+                  <div className={`px-3 py-1 rounded-full text-sm font-black ${biweeklyTotal === emp.stdHours ? "bg-teal-100 text-teal-700" : biweeklyTotal > emp.stdHours ? "bg-rose-100 text-rose-700" : "bg-stone-100 text-stone-600"}`}
+                    style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {biweeklyTotal} / {emp.stdHours} hrs
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-4">
+                  <WeekGrid weekNum={1} weekData={week1} setWeekData={setWeek1} periodStart={periodStart} allocations={emp.allocations} />
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-4">
+                  <WeekGrid weekNum={2} weekData={week2} setWeekData={setWeek2} periodStart={periodStart} allocations={emp.allocations} />
+                </div>
+              </>
+            ) : null}
+          </div>
+        )}
+
+        {tab === "admin" && (
+          <div className="flex gap-5 flex-col md:flex-row">
+            <div className="w-full md:w-60 flex-shrink-0">
+              <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
+                <div className="p-3 bg-stone-50 border-b border-stone-200 flex items-center justify-between">
+                  <span className="text-xs font-bold text-stone-500 uppercase tracking-wider">Employees</span>
+                  <button onClick={addEmployee} className="w-6 h-6 rounded-md bg-teal-500 text-white text-sm flex items-center justify-center hover:bg-teal-600">+</button>
+                </div>
+                <div className="divide-y divide-stone-100 max-h-[60vh] overflow-y-auto">
+                  {employees.map(e => (
+                    <button key={e.id} onClick={() => setEditEmpId(e.id)}
+                      className={`w-full text-left px-4 py-2.5 flex items-center justify-between group transition-colors ${editEmpId === e.id ? "bg-teal-50 border-l-3 border-teal-500" : "hover:bg-stone-50"}`}>
+                      <div>
+                        <div className="text-sm font-bold text-stone-800">{e.initials || "—"}</div>
+                        <div className="text-[11px] text-stone-400 truncate max-w-[130px]">{e.fullName || "New Employee"}</div>
+                        <div className="text-[10px] text-stone-400">{e.allocations.length} allocation{e.allocations.length !== 1 ? "s" : ""}</div>
+                      </div>
+                      <span onClick={(ev) => {ev.stopPropagation(); deleteEmp(e.id);}} className="opacity-0 group-hover:opacity-100 text-stone-400 hover:text-rose-500 text-xs cursor-pointer">✕</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-4 space-y-2">
+                <button onClick={exportConfig} className="w-full px-3 py-2 bg-white border border-stone-200 text-stone-600 rounded-lg text-xs font-medium hover:bg-stone-50">Export Config</button>
+                <button onClick={() => fileRef.current?.click()} className="w-full px-3 py-2 bg-white border border-stone-200 text-stone-600 rounded-lg text-xs font-medium hover:bg-stone-50">Import Config</button>
+                <input ref={fileRef} type="file" accept=".json" onChange={importConfig} className="hidden" />
+              </div>
+            </div>
+
+            <div className="flex-1 min-w-0">
+              {editEmp ? (
+                <div className="space-y-4">
+                  <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-5">
+                    <h2 className="text-sm font-bold text-stone-700 uppercase tracking-wider mb-4">Employee Details</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div><label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">Initials</label>
+                        <input value={editEmp.initials} onChange={e => updateEmp(editEmp.id, {initials: e.target.value.toUpperCase()})}
+                          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" /></div>
+                      <div><label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">Full Name</label>
+                        <input value={editEmp.fullName} onChange={e => updateEmp(editEmp.id, {fullName: e.target.value})}
+                          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" /></div>
+                      <div><label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">Annual Salary ($)</label>
+                        <input type="number" value={editEmp.annualSalary} onChange={e => updateEmp(editEmp.id, {annualSalary: Number(e.target.value)})}
+                          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" /></div>
+                      <div><label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">Biweekly Hrs</label>
+                        <input type="number" value={editEmp.stdHours} onChange={e => updateEmp(editEmp.id, {stdHours: Number(e.target.value)})}
+                          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" /></div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                      <div><label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">HB Hrly ($)</label>
+                        <input type="number" step="0.01" value={editEmp.hbHrly} onChange={e => updateEmp(editEmp.id, {hbHrly: Number(e.target.value)})}
+                          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" /></div>
+                      <div><label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">Ret Hrly ($)</label>
+                        <input type="number" step="0.01" value={editEmp.retHrly} onChange={e => updateEmp(editEmp.id, {retHrly: Number(e.target.value)})}
+                          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" /></div>
+                      <div><label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">FICA Hrly ($)</label>
+                        <input type="number" step="0.01" value={editEmp.ficaHrly} onChange={e => updateEmp(editEmp.id, {ficaHrly: Number(e.target.value)})}
+                          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" /></div>
+                    </div>
+                    <div className="mt-2 text-xs text-stone-400">Gross Hrly = ${editEmp.stdHours > 0 ? (editEmp.annualSalary/26/editEmp.stdHours).toFixed(2) : "—"}/hr</div>
+                  </div>
+
+                  <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h2 className="text-sm font-bold text-stone-700 uppercase tracking-wider">Contract Allocations</h2>
+                        <p className="text-xs text-stone-400 mt-1">Set the max weekly hours each grant allows. When a contract changes, add a new row with the new hours and date range — the system picks the right one automatically based on the pay period.</p>
+                      </div>
+                      <button onClick={() => addAlloc(editEmp.id)} className="px-3 py-1.5 bg-teal-500 text-white rounded-lg text-xs font-bold hover:bg-teal-600 transition-colors flex-shrink-0">+ Add</button>
+                    </div>
+                    {editEmp.allocations.length === 0 ? (
+                      <p className="text-sm text-stone-400 py-6 text-center">No allocations yet. Click "+ Add" to set weekly hour caps per grant.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-stone-50">
+                              <th className="text-left px-3 py-2 text-[10px] font-bold text-stone-500 uppercase">Grant / Project</th>
+                              <th className="text-left px-3 py-2 text-[10px] font-bold text-stone-500 uppercase">Weekly Hrs Max</th>
+                              <th className="text-left px-3 py-2 text-[10px] font-bold text-stone-500 uppercase">Start Date</th>
+                              <th className="text-left px-3 py-2 text-[10px] font-bold text-stone-500 uppercase">End Date</th>
+                              <th className="w-8"></th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-stone-100">
+                            {editEmp.allocations.map(a => (
+                              <tr key={a.id} className="hover:bg-stone-50">
+                                <td className="px-3 py-1.5">
+                                  <select value={a.project} onChange={e => updateAlloc(editEmp.id, a.id, {project: e.target.value})}
+                                    className="border border-stone-300 rounded-md px-2 py-1 text-sm w-full focus:outline-none focus:ring-2 focus:ring-teal-400">
+                                    {ALL_PROJECTS.map(p => <option key={p.short} value={p.short}>{p.short} — {p.long}</option>)}
+                                  </select>
+                                </td>
+                                <td className="px-3 py-1.5">
+                                  <input type="number" min="0" value={a.weeklyHours} onChange={e => updateAlloc(editEmp.id, a.id, {weeklyHours: Number(e.target.value)})}
+                                    className="border border-stone-300 rounded-md px-2 py-1 text-sm w-16 focus:outline-none focus:ring-2 focus:ring-teal-400"
+                                    style={{ fontFamily: "'JetBrains Mono', monospace" }} />
+                                </td>
+                                <td className="px-3 py-1.5">
+                                  <input type="date" value={a.start} onChange={e => updateAlloc(editEmp.id, a.id, {start: e.target.value})}
+                                    className="border border-stone-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" />
+                                </td>
+                                <td className="px-3 py-1.5">
+                                  <input type="date" value={a.end} onChange={e => updateAlloc(editEmp.id, a.id, {end: e.target.value})}
+                                    className="border border-stone-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" />
+                                </td>
+                                <td className="px-2">
+                                  <button onClick={() => deleteAlloc(editEmp.id, a.id)} className="text-stone-400 hover:text-rose-500 transition-colors">✕</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-10 text-center">
+                  <p className="text-stone-400 text-sm">Select an employee to edit, or click + to add one.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.render(<TimeEntryApp />, document.getElementById("root"));
+</script>
+</body>
+</html>
